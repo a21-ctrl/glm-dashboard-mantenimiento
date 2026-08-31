@@ -231,55 +231,60 @@ function capacityForDate(iso){
   if(dow === 6) return 4;
   return 8;
 }
-function sumCapacity(startIso, endIso){
-  if(!startIso || !endIso || startIso > endIso) return 0;
-  let total = 0;
-  let d = new Date(startIso+'T00:00:00');
-  const end = new Date(endIso+'T00:00:00');
-  while(d <= end){
-    total += capacityForDate(d.toISOString().slice(0,10));
-    d.setDate(d.getDate()+1);
-  }
-  return total;
-}
 function lastDayOfMonth(y,m){ return new Date(Number(y), Number(m), 0).getDate(); }
 function countDays(start, end){
   return Math.round((new Date(end+'T00:00:00') - new Date(start+'T00:00:00'))/(1000*60*60*24)) + 1;
 }
-// Horas de ausencia de un auxiliar que caen dentro de [start,end], usando la columna
+// ¿Este día (iso) cae dentro del periodo elegido? Mismo criterio que usa getFiltered()
+// para los datos, así el numerador y el denominador de la ocupación siempre coinciden
+// exactamente — incluye el caso "mes sin año" (ese mes, en cualquier año con datos).
+function diaEnPeriodo(iso, anio, mes){
+  if(anio && iso.slice(0,4) !== anio) return false;
+  if(mes && iso.slice(5,7) !== mes) return false;
+  return true;
+}
+// Horas de ausencia de un auxiliar que caen dentro del periodo (anio/mes), usando la columna
 // "Horas ausentes" de cada registro (ya viene exacta, incluye medios días). Si una ausencia
-// solo se traslapa parcialmente con el rango, se prorratea por días de calendario.
-function horasAusenciaEnRango(auxiliar, start, end){
+// solo se traslapa parcialmente con el periodo, se prorratea por días de calendario.
+function horasAusenciaEnRango(auxiliar, anio, mes, dataMin, dataMax){
   let total = 0;
   AUSENCIAS.filter(a=>a.auxiliar===auxiliar).forEach(a=>{
-    const s = a.start > start ? a.start : start;
-    const e = a.end < end ? a.end : end;
+    const s = a.start < dataMin ? dataMin : a.start;
+    const e = a.end > dataMax ? dataMax : a.end;
     if(s > e) return;
     const diasAusenciaTotal = countDays(a.start, a.end);
-    const diasSolapados = countDays(s, e);
-    total += diasSolapados >= diasAusenciaTotal ? a.horas : a.horas * (diasSolapados/diasAusenciaTotal);
+    let diasSolapados = 0;
+    let d = new Date(s+'T00:00:00');
+    const endD = new Date(e+'T00:00:00');
+    while(d <= endD){
+      if(diaEnPeriodo(d.toISOString().slice(0,10), anio, mes)) diasSolapados++;
+      d.setDate(d.getDate()+1);
+    }
+    if(diasSolapados > 0){
+      total += diasSolapados >= diasAusenciaTotal ? a.horas : a.horas * (diasSolapados/diasAusenciaTotal);
+    }
   });
   return total;
 }
-// Horas disponibles de UN auxiliar en [start,end]: jornada oficial, menos feriados, menos sus ausencias registradas
-function horasDisponiblesAuxiliar(auxiliar, start, end){
-  if(!start || !end || start > end) return 0;
-  const cap = sumCapacity(start, end) - horasAusenciaEnRango(auxiliar, start, end);
+// Horas disponibles de UN auxiliar en el periodo (anio/mes): jornada oficial dentro de ese
+// periodo, menos feriados, menos sus ausencias registradas.
+function horasDisponiblesAuxiliar(auxiliar, anio, mes, dataMin, dataMax){
+  if(!dataMin || !dataMax) return 0;
+  let cap = 0;
+  let d = new Date(dataMin+'T00:00:00');
+  const end = new Date(dataMax+'T00:00:00');
+  while(d <= end){
+    const iso = d.toISOString().slice(0,10);
+    if(diaEnPeriodo(iso, anio, mes)) cap += capacityForDate(iso);
+    d.setDate(d.getDate()+1);
+  }
+  cap -= horasAusenciaEnRango(auxiliar, anio, mes, dataMin, dataMax);
   return Math.max(0, cap);
 }
 // Horas disponibles totales: de un auxiliar específico, o la suma de todos
-function horasDisponiblesTotal(auxFiltro, start, end){
+function horasDisponiblesTotal(auxFiltro, anio, mes, dataMin, dataMax){
   const lista = auxFiltro ? [auxFiltro] : AUX_LIST;
-  return lista.reduce((s,a)=> s + horasDisponiblesAuxiliar(a, start, end), 0);
-}
-function getRange(anio, mes, dataMin, dataMax){
-  let start, end;
-  if(anio && mes){ start = `${anio}-${mes}-01`; end = `${anio}-${mes}-${String(lastDayOfMonth(anio,mes)).padStart(2,'0')}`; }
-  else if(anio){ start = `${anio}-01-01`; end = `${anio}-12-31`; }
-  else { start = dataMin; end = dataMax; }
-  if(start < dataMin) start = dataMin;
-  if(end > dataMax) end = dataMax;
-  return [start, end];
+  return lista.reduce((s,a)=> s + horasDisponiblesAuxiliar(a, anio, mes, dataMin, dataMax), 0);
 }
 
 let RAW_DATA = [];
@@ -303,12 +308,11 @@ function getFiltered(){
 
 function render(){
   const anio = anioSelect.value, mes = mesSelect.value, aux = auxSelect.value;
-  const [rangeStart, rangeEnd] = getRange(anio, mes, dataMin, dataMax);
   const data = getFiltered();
 
   // ---- KPIs generales ----
   const horasTrab = data.reduce((s,d)=>s+d.horas, 0);
-  const horasDisp = horasDisponiblesTotal(aux, rangeStart, rangeEnd);
+  const horasDisp = horasDisponiblesTotal(aux, anio, mes, dataMin, dataMax);
   const ocupacion = horasDisp ? (horasTrab/horasDisp*100) : 0;
   const ordenes = new Set(data.map(d=>d.id)).size;
 
@@ -325,7 +329,7 @@ function render(){
   });
   const horasPorAux = {}; AUX_LIST.forEach(a=>horasPorAux[a]=0);
   dataForAuxChart.forEach(d=>{ if(horasPorAux.hasOwnProperty(d.auxiliar)) horasPorAux[d.auxiliar]+=d.horas; });
-  const dispPorAux = {}; AUX_LIST.forEach(a=> dispPorAux[a] = horasDisponiblesAuxiliar(a, rangeStart, rangeEnd));
+  const dispPorAux = {}; AUX_LIST.forEach(a=> dispPorAux[a] = horasDisponiblesAuxiliar(a, anio, mes, dataMin, dataMax));
   const ocupPorAux = AUX_LIST.map(a=> dispPorAux[a] ? (horasPorAux[a]/dispPorAux[a]*100) : 0);
   const auxBarColors = AUX_LIST.map(a => (!aux || aux===a) ? '#2052BB' : '#C9D3E0');
 
@@ -381,11 +385,7 @@ function render(){
   const mesesOrdenados = Object.keys(meses).sort();
   const ocupMensual = mesesOrdenados.map(ym=>{
     const [y,m] = ym.split('-');
-    const start = `${y}-${m}-01`;
-    const end = `${y}-${m}-${String(lastDayOfMonth(y,m)).padStart(2,'0')}`;
-    const s = start < dataMin ? dataMin : start;
-    const e = end > dataMax ? dataMax : end;
-    const cap = horasDisponiblesTotal(aux, s, e);
+    const cap = horasDisponiblesTotal(aux, y, m, dataMin, dataMax);
     return cap ? (meses[ym]/cap*100) : 0;
   });
   const mesLabels = mesesOrdenados.map(ym=>{
@@ -415,7 +415,13 @@ function render(){
     return {a, h, costo, ord, pct, disp};
   }).sort((x,y)=>y.pct-x.pct);
 
-  document.getElementById('table-sub').textContent = rangeStart+' a '+rangeEnd;
+  const MES_NOMBRES = {'01':'Enero','02':'Febrero','03':'Marzo','04':'Abril','05':'Mayo','06':'Junio','07':'Julio','08':'Agosto','09':'Septiembre','10':'Octubre','11':'Noviembre','12':'Diciembre'};
+  let periodoLabel;
+  if(anio && mes) periodoLabel = `${MES_NOMBRES[mes]} ${anio}`;
+  else if(anio) periodoLabel = anio;
+  else if(mes) periodoLabel = `${MES_NOMBRES[mes]} (todos los años con datos)`;
+  else periodoLabel = `${dataMin} a ${dataMax}`;
+  document.getElementById('table-sub').textContent = periodoLabel;
   tbody.innerHTML = rowsData.map(r=>`
     <tr class="${aux===r.a ? 'highlight':''}">
       <td class="name-cell">${r.a}</td>
