@@ -192,7 +192,6 @@
         <p>Vista operativa de mantenimiento</p>
       </div>
     </div>
-    <div class="page-tag">Página 1 de N · Órdenes de Servicio</div>
   </div>
 
   <div class="loading-banner" id="loading-banner">Cargando datos en vivo desde Google Sheets…</div>
@@ -317,6 +316,11 @@
     </div>
   </div>
 
+  <div class="section-title"><span>Tendencia mensual</span><span class="line"></span></div>
+  <div class="chart-card">
+    <div class="chart-holder" style="height:260px;"><canvas id="chart-tendencia"></canvas></div>
+  </div>
+
   <div class="section-title"><span>Detalle de órdenes</span><span class="line"></span></div>
   <div class="table-card">
     <div class="table-head">
@@ -434,7 +438,7 @@ function populateUbicaciones(razon, sede){
   });
 }
 
-let chartUbic=null, chartTopUbic=null, chartTopActivo=null, chartDonutTipo=null;
+let chartUbic=null, chartTopUbic=null, chartTopActivo=null, chartDonutTipo=null, chartTendencia=null;
 
 function getFiltered(){
   const anio = document.getElementById('f-anio').value;
@@ -667,6 +671,36 @@ function render(){
         y:{ grid:{display:false}, ticks:{font:{family:'Montserrat', size:12, weight:'500'}} }
       }
     }
+  });
+
+  // ---- tendencia mensual de costo total (respeta Empresa/Sede/Ubicación, no Año/Mes) ----
+  const razonT = razonSelect.value, sedeT = sedeSelect.value, ubicT = ubicSelect.value;
+  const dataTrend = RAW_DATA.filter(d=>{
+    if(razonT && d.razon !== razonT) return false;
+    if(sedeT && d.sede !== sedeT) return false;
+    if(ubicT && d.ubic !== ubicT) return false;
+    return true;
+  });
+  const mesesCosto = {};
+  dataTrend.forEach(d=>{
+    if(!d.fecha) return;
+    const ym = d.fecha.slice(0,7);
+    mesesCosto[ym] = (mesesCosto[ym]||0) + d.costo;
+  });
+  const mesesOrdenados = Object.keys(mesesCosto).sort();
+  const mesLabels = mesesOrdenados.map(ym=>{
+    const [y,m] = ym.split('-');
+    const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return nombres[Number(m)-1] + ' ' + y.slice(2);
+  });
+  if(chartTendencia) chartTendencia.destroy();
+  chartTendencia = new Chart(document.getElementById('chart-tendencia'), {
+    type:'line',
+    data:{ labels: mesLabels, datasets:[{ label:'Costo total', data: mesesOrdenados.map(ym=>mesesCosto[ym]), borderColor:'#2052BB', backgroundColor:'rgba(32,82,187,0.08)', fill:true, tension:0.25, pointRadius:4, pointBackgroundColor:'#2052BB' }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>fmtMoney(c.raw)}} },
+      scales:{ y:{ min:0, grid:{color:'#EFF1F4'}, ticks:{callback:v=>fmtMoney(v), font:{family:'Montserrat', weight:'500'}} },
+        x:{ grid:{display:false}, ticks:{font:{family:'Montserrat', weight:'500'}} } } }
   });
 
   // ---- table ----
