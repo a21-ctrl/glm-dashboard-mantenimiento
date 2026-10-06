@@ -100,7 +100,7 @@
 
   /* KPI grid */
   .kpi-grid{
-    display:grid;grid-template-columns:1.6fr repeat(6,1fr);gap:10px;margin-bottom:16px;
+    display:grid;grid-template-columns:1.6fr repeat(4,1fr);gap:10px;margin-bottom:16px;
   }
   .kpi-card{
     background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--navy);
@@ -253,14 +253,6 @@
       <div class="kpi-label">Correctivos</div>
       <div class="kpi-value num" id="kpi-Correctivo">0</div>
     </div>
-    <div class="kpi-card" style="border-left-color:var(--t-instalacion)">
-      <div class="kpi-label">Instalaciones</div>
-      <div class="kpi-value num" id="kpi-Instalación">0</div>
-    </div>
-    <div class="kpi-card" style="border-left-color:var(--t-traslado)">
-      <div class="kpi-label">Traslados</div>
-      <div class="kpi-value num" id="kpi-Traslado">0</div>
-    </div>
     <div class="kpi-card" style="border-left-color:var(--t-otros)">
       <div class="kpi-label">Otros</div>
       <div class="kpi-value num" id="kpi-Otros">0</div>
@@ -364,11 +356,15 @@ const TIPO_COLORS = {
   'Revisión':'#6C7A92',
   'Preventivo':'#2052BB',
   'Correctivo':'#C4432B',
-  'Instalación':'#71B714',
-  'Traslado':'#DB9A1F',
   'Otros':'#9B8AA6'
 };
-const TIPO_ORDER = ['Revisión','Preventivo','Correctivo','Instalación','Traslado','Otros'];
+const TIPO_ORDER = ['Revisión','Preventivo','Correctivo','Otros'];
+// Cualquier tipo que no sea Revisión, Preventivo o Correctivo se agrupa en "Otros"
+// para que los totales siempre cuadren.
+function normalizeTipo(t){
+  const v = String(t||'').trim();
+  return TIPO_ORDER.includes(v) ? v : 'Otros';
+}
 
 function fmtMoney(v){
   return 'Q ' + v.toLocaleString('es-GT', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -469,27 +465,18 @@ function top5WithOtros(entries){
   return result;
 }
 
-// ---- Agrupación de "trabajos reales": colapsa filas que son el mismo trabajo
-// dividido por bodega (mismo Orden base + sufijo de bodega que coincide con la Ubicación
-// de esa fila), siguiendo la convención de nomenclatura: letra directa A-H, o "B"+dígito
-// para bodegas numéricas. Un sufijo numérico sin "B" (ej. _1, _2) NO se considera bodega:
-// es un trabajo distinto (ej. revisiones de techo por bodega), y se cuenta aparte.
-function bodegaCodeFromUbic(ubic){
-  if(!ubic) return null;
-  const m = ubic.match(/^Bodega (.+)$/);
-  return m ? m[1] : null;
-}
+// ---- Agrupación de "trabajos reales" ----
+// Un trabajo = un número base de orden. Todo lo que viene después del número
+// (_1, _2, _B2, _B3, etc.) son partes del mismo trabajo y se cuentan una sola vez.
+// Ejemplos:  OT_MTY_00002_1, OT_MTY_00002_2, OT_MTY_00002_3  ->  OT_MTY_00002
+//            OT_APS_MTY_5664_B2, OT_APS_MTY_5664_B5          ->  OT_APS_MTY_5664
+// Regla: se corta el ID en el primer segmento que es solo números.
 function getJobKey(row){
-  const m = row.id.match(/^(.+)_([A-Za-z0-9]+)$/);
-  if(!m) return row.id;
-  const base = m[1], suffix = m[2];
-  const bcode = bodegaCodeFromUbic(row.ubic);
-  if(bcode === null) return row.id;
-  if(/^[0-9]+$/.test(bcode)){
-    const mb = suffix.match(/^B([0-9]+)$/);
-    return (mb && mb[1] === bcode) ? base : row.id;
-  }
-  return (suffix === bcode) ? base : row.id;
+  const id = String(row.id||'').trim().toUpperCase();
+  const parts = id.split('_');
+  const idx = parts.findIndex(p => /^[0-9]+$/.test(p));
+  if(idx === -1) return id;
+  return parts.slice(0, idx+1).join('_');
 }
 function getJobGroups(rows){
   const map = new Map();
@@ -523,10 +510,18 @@ function render(){
     costoTotal += d.costo;
     if(tipoCosto.hasOwnProperty(d.tipo)) tipoCosto[d.tipo] += d.costo;
 
-    if(!ubicCounts[d.ubic]) { ubicCounts[d.ubic] = {}; TIPO_ORDER.forEach(t=>ubicCounts[d.ubic][t]=0); }
-    if(ubicCounts[d.ubic].hasOwnProperty(d.tipo)) ubicCounts[d.ubic][d.tipo]++;
     ubicCosto[d.ubic] = (ubicCosto[d.ubic]||0) + d.costo;
     activoCosto[d.activo] = (activoCosto[d.activo]||0) + d.costo;
+  });
+
+  // Trabajos por ubicación: cada trabajo se cuenta una vez por ubicación donde aparece
+  const vistosUbic = new Set();
+  data.forEach(d=>{
+    const k = getJobKey(d) + '||' + d.ubic;
+    if(vistosUbic.has(k)) return;
+    vistosUbic.add(k);
+    if(!ubicCounts[d.ubic]) { ubicCounts[d.ubic] = {}; TIPO_ORDER.forEach(t=>ubicCounts[d.ubic][t]=0); }
+    if(ubicCounts[d.ubic].hasOwnProperty(d.tipo)) ubicCounts[d.ubic][d.tipo]++;
   });
 
   TIPO_ORDER.forEach(t=>{
@@ -555,9 +550,9 @@ function render(){
     breakdownEl.appendChild(row);
   });
 
-  // ---- donut: tipos de mantenimiento realizados (por cantidad) ----
-  const donutLabels = TIPO_ORDER.filter(t=>tipoCounts[t] > 0);
-  const donutData = donutLabels.map(t=>tipoCounts[t]);
+  // ---- donut: costo de mantenimiento por tipo ----
+  const donutLabels = TIPO_ORDER.filter(t=>tipoCosto[t] > 0);
+  const donutData = donutLabels.map(t=>tipoCosto[t]);
   const donutColors = donutLabels.map(t=>TIPO_COLORS[t]);
   if(chartDonutTipo) chartDonutTipo.destroy();
   chartDonutTipo = new Chart(document.getElementById('chart-donut-tipo'), {
@@ -569,7 +564,7 @@ function render(){
         label:c=>{
           const total = donutData.reduce((s,v)=>s+v,0);
           const pct = total ? (c.raw/total*100).toFixed(1) : 0;
-          return `${c.label}: ${fmtInt(c.raw)} (${pct}%)`;
+          return `${c.label}: ${fmtMoney(c.raw)} (${pct}%)`;
         }
       }} }
     }
@@ -775,7 +770,7 @@ Papa.parse(CSV_URL, {
       ubic: row['Ubicación'],
       activo: row['Activo'],
       trabajo: row['Trabajo a realizar'],
-      tipo: row['Tipo de Mantenimiento'],
+      tipo: normalizeTipo(row['Tipo de Mantenimiento']),
       contratista: row['Tipo de Contratista'],
       fecha: parseDateToISO(row['Fecha Inicio']),
       costo: parseCosto(row['Costo Total Mantenimiento'])
